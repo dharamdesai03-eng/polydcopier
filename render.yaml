@@ -3,7 +3,7 @@ services:
     name: polydcopier
     runtime: node
     region: frankfurt
-    plan: starter   # $7/mo always-on; Free idles after 15min and adds cold starts
+    plan: free   # $7/mo always-on; Free idles after 15min and adds cold starts
     branch: main
     buildCommand: npm install
     startCommand: node src/index.js
@@ -24,10 +24,6 @@ services:
       - key: PUBLIC_URL
         sync: false
       - key: DB_PATH
-        value: /data/bot.db
+        value: ./data/bot.db
       - key: PAPER_TRADE
         value: "0"
-    disk:
-      name: polydcopier-data
-      mountPath: /data
-      sizeGB: 1
