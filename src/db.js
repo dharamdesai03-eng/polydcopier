@@ -86,6 +86,58 @@ CREATE TABLE IF NOT EXISTS connect_nonces (
   consumed     INTEGER NOT NULL DEFAULT 0,
   created_at   INTEGER NOT NULL DEFAULT (unixepoch())
 );
+
+CREATE TABLE IF NOT EXISTS tp_sl_targets (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id       INTEGER NOT NULL,
+  market_id     TEXT NOT NULL,
+  market_name   TEXT,
+  outcome       TEXT NOT NULL,
+  tp_price      REAL,
+  sl_price      REAL,
+  active        INTEGER NOT NULL DEFAULT 1,
+  created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+  triggered_at  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS autopilot_config (
+  chat_id        INTEGER PRIMARY KEY,
+  enabled        INTEGER NOT NULL DEFAULT 0,
+  top_n          INTEGER NOT NULL DEFAULT 5,
+  min_winrate    REAL,
+  last_synced_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS limit_orders (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id      INTEGER NOT NULL,
+  market_id    TEXT,
+  market_name  TEXT,
+  side         TEXT,
+  outcome      TEXT,
+  price        REAL,
+  size         REAL,
+  status       TEXT NOT NULL DEFAULT 'pending',
+  created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+  filled_at    INTEGER,
+  cancelled_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS referrals (
+  chat_id              INTEGER PRIMARY KEY,
+  ref_code             TEXT NOT NULL UNIQUE,
+  referred_by          INTEGER,
+  total_referred       INTEGER NOT NULL DEFAULT 0,
+  total_earnings_usdc  REAL NOT NULL DEFAULT 0,
+  created_at           INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS pending_inputs (
+  chat_id    INTEGER PRIMARY KEY,
+  action     TEXT NOT NULL,
+  context    TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
 `);
 
 const stmt = {
@@ -161,6 +213,66 @@ const stmt = {
     WHERE nonce = ? AND consumed = 0 AND expires_at > unixepoch()
     RETURNING chat_id
   `),
+
+  // ── TP/SL targets ─────────────────────────────────────────────────
+  addTpSl: db.prepare(`
+    INSERT INTO tp_sl_targets (chat_id, market_id, market_name, outcome, tp_price, sl_price)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `),
+  listTpSl: db.prepare(`
+    SELECT * FROM tp_sl_targets WHERE chat_id = ? AND active = 1 ORDER BY id DESC
+  `),
+  setTpSlActive: db.prepare('UPDATE tp_sl_targets SET active = ? WHERE id = ? AND chat_id = ?'),
+  triggerTpSl: db.prepare(`
+    UPDATE tp_sl_targets SET active = 0, triggered_at = unixepoch() WHERE id = ?
+  `),
+
+  // ── AutoPilot ─────────────────────────────────────────────────────
+  upsertAutopilot: db.prepare(`
+    INSERT INTO autopilot_config (chat_id, enabled, top_n)
+    VALUES (?, ?, ?)
+    ON CONFLICT (chat_id) DO UPDATE SET enabled = excluded.enabled, top_n = excluded.top_n
+  `),
+  getAutopilot: db.prepare('SELECT * FROM autopilot_config WHERE chat_id = ?'),
+  setAutopilotSynced: db.prepare(`
+    UPDATE autopilot_config SET last_synced_at = unixepoch() WHERE chat_id = ?
+  `),
+
+  // ── Limit Orders ──────────────────────────────────────────────────
+  addLimitOrder: db.prepare(`
+    INSERT INTO limit_orders (chat_id, market_id, market_name, side, outcome, price, size, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+  `),
+  listLimitOrders: db.prepare(`
+    SELECT * FROM limit_orders WHERE chat_id = ? AND status = 'pending' ORDER BY id DESC
+  `),
+  cancelLimitOrder: db.prepare(`
+    UPDATE limit_orders SET status = 'cancelled', cancelled_at = unixepoch()
+    WHERE id = ? AND chat_id = ? AND status = 'pending'
+  `),
+
+  // ── Referrals ─────────────────────────────────────────────────────
+  upsertReferral: db.prepare(`
+    INSERT INTO referrals (chat_id, ref_code, referred_by) VALUES (?, ?, ?)
+    ON CONFLICT (chat_id) DO NOTHING
+  `),
+  getReferral: db.prepare('SELECT * FROM referrals WHERE chat_id = ?'),
+  findReferralByCode: db.prepare('SELECT * FROM referrals WHERE ref_code = ?'),
+  bumpReferralCount: db.prepare(`
+    UPDATE referrals SET total_referred = total_referred + 1 WHERE chat_id = ?
+  `),
+
+  // ── Pending input flow (when bot asks for a value) ────────────────
+  setPendingInput: db.prepare(`
+    INSERT INTO pending_inputs (chat_id, action, context, created_at)
+    VALUES (?, ?, ?, unixepoch())
+    ON CONFLICT (chat_id) DO UPDATE SET
+      action = excluded.action,
+      context = excluded.context,
+      created_at = excluded.created_at
+  `),
+  getPendingInput: db.prepare('SELECT * FROM pending_inputs WHERE chat_id = ?'),
+  clearPendingInput: db.prepare('DELETE FROM pending_inputs WHERE chat_id = ?'),
 };
 
 module.exports = { db, stmt };
