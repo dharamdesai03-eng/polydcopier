@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Connect wallet — polyDcopier</title>
+<style>
+  :root {
+    --bg: #0e1018; --bg2: #161a25; --line: #232838;
+    --fg: #f0f3fa; --fg-dim: #98a0b3; --fg-mute: #5a6075;
+    --accent: #7f5cff; --accent2: #4ddcff; --success: #42d18a; --danger: #ff5570;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:0; background:var(--bg); color:var(--fg);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .card { background:var(--bg2); border:1px solid var(--line); border-radius:18px;
+          padding:24px; width:100%; max-width:420px; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom:20px; }
+  .brand .logo { width:32px; height:32px; border-radius:8px;
+                 background:linear-gradient(135deg,var(--accent),var(--accent2)); }
+  .brand .name { font-weight:600; font-size:16px; }
+  h1 { font-size:22px; margin:0 0 6px; font-weight:600; }
+  .sub { color:var(--fg-dim); font-size:14px; line-height:1.5; margin:0 0 22px; }
+  .btn { display:flex; align-items:center; justify-content:center; gap:8px;
+         width:100%; padding:14px 16px; border-radius:12px; border:none;
+         font-size:15px; font-weight:600; cursor:pointer;
+         background:linear-gradient(135deg,var(--accent),var(--accent2));
+         color:#fff; transition:transform .1s; }
+  .btn:hover:not(:disabled) { transform:translateY(-1px); }
+  .btn:disabled { opacity:.55; cursor:wait; }
+  .ghost { background:transparent; color:var(--fg-dim);
+           border:1px solid var(--line); margin-top:8px; font-weight:500; }
+  .status { margin-top:16px; padding:12px 14px; border-radius:10px;
+            font-size:13px; line-height:1.5; }
+  .status.ok  { background:rgba(66,209,138,.1); border:1px solid rgba(66,209,138,.3); color:var(--success); }
+  .status.err { background:rgba(255,85,112,.1); border:1px solid rgba(255,85,112,.3); color:var(--danger); }
+  .status.info{ background:rgba(127,92,255,.1); border:1px solid rgba(127,92,255,.3); color:var(--fg-dim); }
+  ul.wallets { list-style:none; padding:0; margin:0 0 22px; display:grid; gap:8px; }
+  ul.wallets li { display:flex; align-items:center; gap:12px; padding:10px 12px;
+                  border:1px solid var(--line); border-radius:10px;
+                  background:rgba(255,255,255,.02); font-size:13px; color:var(--fg-dim); }
+  ul.wallets li .dot { width:8px; height:8px; border-radius:50%; background:var(--accent); }
+  .footer { margin-top:18px; font-size:12px; color:var(--fg-mute); text-align:center; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand"><div class="logo"></div><div class="name">polyDcopier</div></div>
+  <h1>Connect your wallet</h1>
+  <p class="sub">One signature unlocks Polymarket trading. Your seed phrase and private key never leave your device — we only get a typed-message signature scoped to Polymarket.</p>
+
+  <ul class="wallets">
+    <li><span class="dot"></span>MetaMask, Coinbase Wallet, Rabby, Brave</li>
+    <li><span class="dot"></span>Trust, Phantom, Rainbow, OKX, Frame</li>
+    <li><span class="dot"></span>Any wallet supporting WalletConnect v2</li>
+  </ul>
+
+  <button class="btn" id="connect">Connect with WalletConnect</button>
+  <button class="btn ghost" id="metamaskExt" style="display:none">Connect MetaMask extension</button>
+
+  <div id="status" class="status info" style="display:none"></div>
+
+  <p class="footer">After signing, return to your Telegram chat — we'll confirm there.</p>
+</div>
+
+<script type="module">
+const NONCE = new URLSearchParams(location.search).get('nonce');
+const $status = document.getElementById('status');
+const $btn = document.getElementById('connect');
+const $btnMM = document.getElementById('metamaskExt');
+
+function setStatus(msg, kind = 'info') {
+  $status.style.display = 'block';
+  $status.className = 'status ' + kind;
+  $status.textContent = msg;
+}
+function fail(msg) { setStatus(msg, 'err'); $btn.disabled = false; $btnMM.disabled = false; }
+
+if (!NONCE) {
+  fail('Missing connect link nonce. Open this page through /connect in your Telegram bot.');
+}
+
+// Fetch the signing payload + the WalletConnect project id from server
+let wcProjectId, typedData, timestamp, nonceField, address;
+
+async function fetchAuthSetup(addr) {
+  const r = await fetch('/api/wallet/auth-request?address=' + encodeURIComponent(addr));
+  if (!r.ok) throw new Error(await r.text());
+  return await r.json();
+}
+
+async function fetchProjectId() {
+  const r = await fetch('/api/wallet/wc-project-id');
+  if (!r.ok) throw new Error('walletconnect_project_id_unavailable');
+  return (await r.json()).projectId;
+}
+
+async function postConnect(payload) {
+  const r = await fetch('/api/wallet/connect?nonce=' + encodeURIComponent(NONCE), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return await r.json();
+}
+
+// ---- WalletConnect v2 path ----------------------------------------
+import { SignClient } from 'https://esm.sh/@walletconnect/sign-client@2.17.0';
+
+let signClient = null;
+async function ensureSignClient() {
+  if (signClient) return signClient;
+  if (!wcProjectId) wcProjectId = await fetchProjectId();
+  signClient = await SignClient.init({
+    projectId: wcProjectId,
+    metadata: {
+      name: 'polyDcopier',
+      description: 'Polymarket copy trading bot',
+      url: location.origin,
+      icons: [location.origin + '/favicon.ico'],
+    },
+  });
+  return signClient;
+}
+
+$btn.addEventListener('click', async () => {
+  $btn.disabled = true;
+  setStatus('Opening WalletConnect…');
+  try {
+    const client = await ensureSignClient();
+    const { uri, approval } = await client.connect({
+      requiredNamespaces: {
+        eip155: {
+          methods: ['eth_signTypedData_v4', 'eth_accounts'],
+          chains: ['eip155:137'],  // Polygon
+          events: ['accountsChanged', 'chainChanged'],
+        },
+      },
+    });
+
+    // Trigger native MetaMask Mobile app via deep link, or show QR for desktop.
+    if (uri) {
+      const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+      if (isMobile) {
+        // Universal deeplink — opens MetaMask, Trust, Coinbase Wallet etc.
+        window.location.href = 'https://metamask.app.link/wc?uri=' + encodeURIComponent(uri);
+        setStatus('Switching to MetaMask… approve the connection there.');
+      } else {
+        // Show QR — desktop users scan with their phone wallet
+        await renderQR(uri);
+        setStatus('Scan the QR code with your wallet (or click "Connect MetaMask extension" below).');
+        $btnMM.style.display = 'flex';
+      }
+    }
+
+    const session = await approval();
+    address = session.namespaces.eip155.accounts[0].split(':').pop();
+    setStatus('Connected: ' + address.slice(0,6)+'…'+address.slice(-4) + '. Now requesting signature…');
+
+    // Get the typed-data payload
+    const setup = await fetchAuthSetup(address);
+    typedData = setup.typedData; timestamp = setup.timestamp; nonceField = setup.nonce;
+
+    // Ask wallet to sign
+    const signature = await client.request({
+      topic: session.topic,
+      chainId: 'eip155:137',
+      request: {
+        method: 'eth_signTypedData_v4',
+        params: [address, JSON.stringify(typedData)],
+      },
+    });
+
+    setStatus('Signature received. Deriving Polymarket API key…');
+    const r = await postConnect({ address, signature, timestamp, nonce: nonceField });
+    if (r.ok) {
+      setStatus('✓ Wallet linked. Open Telegram — we sent you a confirmation.', 'ok');
+      $btn.textContent = 'Linked ✓'; $btn.disabled = true;
+    } else {
+      fail(r.error || 'Polymarket rejected the signature.');
+    }
+  } catch (e) {
+    console.error(e);
+    fail('Failed: ' + (e.message || e));
+  }
+});
+
+// ---- MetaMask extension fallback (desktop) -------------------------
+$btnMM.addEventListener('click', async () => {
+  if (!window.ethereum) {
+    fail('No injected wallet. Install MetaMask or use the QR above.');
+    return;
+  }
+  $btnMM.disabled = true;
+  setStatus('Opening MetaMask…');
+  try {
+    await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+    address = accounts[0];
+    // Switch / add Polygon
+    try {
+      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x89' }]});
+    } catch (e) {
+      if (e.code === 4902) {
+        await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{
+          chainId: '0x89', chainName: 'Polygon',
+          nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 },
+          rpcUrls: ['https://polygon-rpc.com'],
+          blockExplorerUrls: ['https://polygonscan.com'],
+        }]});
+      }
+    }
+    const setup = await fetchAuthSetup(address);
+    typedData = setup.typedData; timestamp = setup.timestamp; nonceField = setup.nonce;
+    const signature = await window.ethereum.request({
+      method: 'eth_signTypedData_v4',
+      params: [address, JSON.stringify(typedData)],
+    });
+    setStatus('Signature received. Deriving Polymarket API key…');
+    const r = await postConnect({ address, signature, timestamp, nonce: nonceField });
+    if (r.ok) {
+      setStatus('✓ Wallet linked. Open Telegram — we sent you a confirmation.', 'ok');
+      $btnMM.textContent = 'Linked ✓';
+    } else {
+      fail(r.error || 'Polymarket rejected the signature.');
+    }
+  } catch (e) {
+    console.error(e);
+    fail('Failed: ' + (e.message || e));
+  }
+});
+
+// Lightweight QR renderer (no external lib — uses Google Charts API for simplicity)
+async function renderQR(text) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'margin:16px 0; text-align:center;';
+  const img = document.createElement('img');
+  img.alt = 'WalletConnect QR';
+  img.style.cssText = 'width:200px; height:200px; background:#fff; padding:8px; border-radius:8px;';
+  // Tiny inline QR via charts.io (no GET arg leakage of the WC URI is harmless)
+  img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=' + encodeURIComponent(text);
+  wrap.appendChild(img);
+  $status.parentNode.insertBefore(wrap, $status);
+}
+
+// Show extension button on desktop
+if (!/android|iphone|ipad|ipod/i.test(navigator.userAgent) && window.ethereum) {
+  $btnMM.style.display = 'flex';
+}
+</script>
+</body>
+</html>
