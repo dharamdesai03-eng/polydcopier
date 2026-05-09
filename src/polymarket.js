@@ -151,11 +151,6 @@ async function fetchMarketByTokenId(tokenId) {
 // L1 wallet auth — user signs ClobAuth typed message, we exchange for API key.
 const CLOB_AUTH_DOMAIN = { name: 'ClobAuthDomain', version: '1', chainId: CHAIN_ID };
 const CLOB_AUTH_TYPES = {
-  EIP712Domain: [
-    { name: 'name',    type: 'string'  },
-    { name: 'version', type: 'string'  },
-    { name: 'chainId', type: 'uint256' },
-  ],
   ClobAuth: [
     { name: 'address',   type: 'address' },
     { name: 'timestamp', type: 'string'  },
