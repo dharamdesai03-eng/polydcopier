@@ -32,6 +32,17 @@ app.get('/api/wallet/auth-request', (req, res) => {
   const timestamp = String(Math.floor(Date.now() / 1000));
   const nonce = '0';
   const typedData = getClobAuthRequest(address, timestamp, nonce);
+  // eth_signTypedData_v4 (used by WalletConnect / MetaMask extension via raw RPC)
+  // requires EIP712Domain in the types map. ethers.js adds it implicitly so we
+  // keep it out of CLOB_AUTH_TYPES, then layer it in here just for the wire response.
+  typedData.types = {
+    EIP712Domain: [
+      { name: 'name',    type: 'string'  },
+      { name: 'version', type: 'string'  },
+      { name: 'chainId', type: 'uint256' },
+    ],
+    ...typedData.types,
+  };
   res.json({ typedData, timestamp, nonce });
 });
 
