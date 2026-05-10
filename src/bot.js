@@ -12,7 +12,6 @@ const crypto = require('crypto');
 const { stmt } = require('./db');
 const { isValidEthAddress, shortAddr } = require('./utils');
 const md = require('./polymarket-data');
-const lm = require('./leader-manage');
 
 const PUBLIC_URL = process.env.PUBLIC_URL || 'http://localhost:3000';
 
@@ -49,7 +48,6 @@ function genRefCode(chatId) {
 const MENU = {
   reply_markup: {
     keyboard: [
-      [{ text: '🔧 Manage Leaders' }],
       [{ text: '🔍 Markets' }, { text: '🪙 Copy Trade' }],
       [{ text: '📊 Portfolio' }, { text: '💰 Wallet' }],
       [{ text: '🛡 TP/SL' },     { text: '🦞 AutoPilot' }],
@@ -558,7 +556,6 @@ function setup(bot, orchestrator) {
 
     try {
       switch (text) {
-        case '🔧 Manage Leaders': { const v = lm.viewManageList(chatId); return send(bot, chatId, v.text, v.kb); }
         case '🔍 Markets':       return showView(chatId, () => viewMarkets(chatId, 0));
         case '🪙 Copy Trade':    return showView(chatId, () => viewCopyTrade(chatId));
         case '📊 Portfolio':     return showView(chatId, () => viewPortfolio(chatId));
@@ -591,11 +588,6 @@ function setup(bot, orchestrator) {
     const chatId = q.message.chat.id;
     const data = q.data || '';
     try {
-      if (data.startsWith('lm:')) {
-        await lm.handleCallback(bot, chatId, data);
-        bot.answerCallbackQuery(q.id);
-        return;
-      }
       // Navigation
       if (data === 'menu') {
         sendDashboardKb(bot, chatId, await buildDashboard(chatId));
