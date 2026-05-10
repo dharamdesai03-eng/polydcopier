@@ -542,9 +542,19 @@ function setup(bot, orchestrator) {
     const chatId = msg.chat.id;
     const text = msg.text.trim();
 
+    const MENU_LABELS = new Set([
+      '🔍 Markets', '🪙 Copy Trade',
+      '📊 Portfolio', '💰 Wallet',
+      '🛡 TP/SL', '🦞 AutoPilot',
+      '🧠 Smart Wallets', '🔄 Refresh',
+      '📝 Limit Orders', '👥 Referrals',
+      '⚙️ Settings', '📚 Help',
+      '🇺🇸 English',
+    ]);
+    if (MENU_LABELS.has(text)) { stmt.clearPendingInput.run(chatId); }
     // Check if we're awaiting input
     const pending = stmt.getPendingInput.get(chatId);
-    if (pending) {
+    if (pending && !MENU_LABELS.has(text)) {
       stmt.clearPendingInput.run(chatId);
       try {
         await handlePendingInput(bot, chatId, pending, text);
