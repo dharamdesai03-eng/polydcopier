@@ -12,6 +12,11 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 
+// idempotent column-add helper (SQLite has no ADD COLUMN IF NOT EXISTS)
+function addCol(table, col, ddl) {
+  try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`); } catch (_) {}
+}
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   chat_id              INTEGER PRIMARY KEY,
@@ -140,6 +145,17 @@ CREATE TABLE IF NOT EXISTS pending_inputs (
 );
 `);
 
+// ── per-leader management columns (idempotent) ──────────────────────────
+addCol('leaders', 'sizing_mode',         "TEXT DEFAULT 'PCT'");      // PCT | FIXED_USDC | MATCH
+addCol('leaders', 'fixed_size_usdc',     'REAL');
+addCol('leaders', 'slippage_pct',        'REAL');
+addCol('leaders', 'daily_limit_trades',  'INTEGER');
+addCol('leaders', 'daily_limit_usdc',    'REAL');
+addCol('leaders', 'auto_tp_pct',         'REAL');                    // auto-close at +X%
+addCol('leaders', 'auto_sl_pct',         'REAL');                    // auto-close at -X%
+addCol('leaders', 'muted',               'INTEGER NOT NULL DEFAULT 0');
+addCol('leaders', 'paused',              'INTEGER NOT NULL DEFAULT 0');
+
 const stmt = {
   upsertUser: db.prepare(`
     INSERT INTO users (chat_id, telegram_username) VALUES (?, ?)
@@ -174,6 +190,18 @@ const stmt = {
     WHERE l.active = 1 AND u.bot_enabled = 1 AND u.proxy_address IS NOT NULL
   `),
   setLeaderSizing: db.prepare('UPDATE leaders SET copy_size_pct = ?, max_trade_size_usdc = ? WHERE id = ?'),
+
+  getLeaderById: db.prepare('SELECT * FROM leaders WHERE id = ? AND chat_id = ?'),
+  setLeaderField: (col) => db.prepare(`UPDATE leaders SET ${col} = ? WHERE id = ? AND chat_id = ?`),
+  leaderPnl: db.prepare(`
+    SELECT COUNT(*) AS n, SUM(COALESCE(pnl_usdc,0)) AS pnl, SUM(COALESCE(notional_usdc,0)) AS vol
+    FROM trades WHERE chat_id = ? AND lower(leader_address) = lower(?)
+  `),
+  leaderDailyCount: db.prepare(`
+    SELECT COUNT(*) AS n, SUM(COALESCE(notional_usdc,0)) AS vol
+    FROM trades WHERE chat_id = ? AND lower(leader_address) = lower(?)
+      AND detected_at > unixepoch() - 86400 AND status = 'submitted'
+  `),
   setLeaderFilters: db.prepare(`
     UPDATE leaders SET
       filter_min_price = ?, filter_max_price = ?,
